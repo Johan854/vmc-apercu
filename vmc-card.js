@@ -6,7 +6,7 @@
  * (valeur, moyenne 24 h, seuil de déclenchement) et réglage des seuils.
  * Style verre, thème clair/sombre automatique, éditeur visuel, textes en français.
  */
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 /* === NUANCE COMMUNE v2 (cartes Johan854) === */
 const GV_NUANCES = [["braise", "Braise (rouge)", "#e0524f"], ["ocean", "Océan (bleu)", "#2f8fd8"], ["lagon", "Lagon (turquoise)", "#1fb5a8"], ["foret", "Forêt (vert)", "#3fae5a"], ["lavande", "Lavande (violet)", "#8a63d8"], ["framboise", "Framboise (rose)", "#e05597"], ["ambre", "Ambre (orange)", "#e8902c"], ["ardoise", "Ardoise (neutre)", "#7d8595"]];
@@ -39,6 +39,9 @@ const DEFAULTS = {
   relay_entity: "switch.dingtian_relay57239_switch7", // collé = vitesse 2
   timer_entity: "timer.vmc_grande_vitesse",
   humidity_entity: "binary_sensor.vmc_humidite_elevee",
+  trigger_entity: "binary_sensor.vmc_humidite_au_dessus_du_seuil", // même condition, sans temporisation
+  delay_off: 10, // minutes de maintien en vitesse 2 après la baisse d'humidité
+  max_hours: 3, // durée maximale de la vitesse 2 sur humidité
   power_entity: "sensor.esp_tableau_divers_puissance",
   gap_entity: "input_number.vmc_ecart_humidite",
   max_entity: "input_number.vmc_seuil_humidite_max",
@@ -53,6 +56,7 @@ const DEFAULTS = {
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const num = (st) => (st && !["unavailable", "unknown"].includes(st.state) && !isNaN(Number(st.state)) ? Number(st.state) : null);
 const hms = (s) => { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, "0")}`; };
+const lng = (s) => { s = Math.max(0, Math.round(s / 60)); if (s < 1) return "moins d'1 min"; if (s < 60) return `${s} min`; return `${Math.floor(s / 60)} h ${String(s % 60).padStart(2, "0")}`; };
 const dur = (str) => { if (!str) return 0; const p = String(str).split(":").map(Number); return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : 0; };
 
 class VmcCard extends HTMLElement {
@@ -67,7 +71,7 @@ class VmcCard extends HTMLElement {
     if (sig !== this._sig) { this._sig = sig; this._render(); }
   }
   getCardSize() { return 5; }
-  connectedCallback() { this._t = setInterval(() => { const s = this._hass && this._hass.states[this._config.timer_entity]; if (s && s.state === "active") this._render(); }, 1000); }
+  connectedCallback() { this._t = setInterval(() => { const s = this._hass && this._hass.states[this._config.timer_entity]; const r = this._hass && this._hass.states[this._config.relay_entity]; if ((s && s.state === "active") || (r && r.state === "on")) this._render(); }, 1000); }
   disconnectedCallback() { clearInterval(this._t); }
   _isDark() {
     const t = this._config.theme; if (t === "dark") return true; if (t === "light") return false;
@@ -86,7 +90,21 @@ class VmcCard extends HTMLElement {
     const v2 = relay && relay.state === "on", unk = !relay || relay.state === "unavailable";
     const left = this._remaining(timer), hOn = hum && hum.state === "on";
     const gap = num(S(c.gap_entity)), mx = num(S(c.max_entity));
-    const reason = unk ? "Relais indisponible" : !v2 ? "Vitesse normale" : left != null ? `Bouton de relance · encore ${hms(left)}` : hOn ? `Humidité : ${esc(hum.attributes.pieces || "en hausse")}` : "Vitesse 2";
+    /* durées : depuis quand la vitesse 2 tourne, et quand elle s'arrêtera */
+    const now = Date.now(), ago = (st) => (st ? (now - new Date(st.last_changed).getTime()) / 1000 : 0);
+    const since = v2 ? ago(relay) : null;
+    let back = null, backTxt = "";
+    if (v2) {
+      const trg = S(c.trigger_entity), maxS = Number(c.max_hours || 3) * 3600, hLeftMax = hOn ? maxS - ago(hum) : null;
+      const hDown = hOn && trg && trg.state === "off" ? Number(c.delay_off || 10) * 60 - ago(trg) : null;
+      if (hOn && hDown == null) {
+        backTxt = left != null ? `Bouton ${hms(left)} · puis selon l'humidité (${lng(hLeftMax)} max)` : `Humidité encore élevée · ${lng(hLeftMax)} max`;
+      } else {
+        back = Math.max(left != null ? left : 0, hDown != null ? Math.min(hDown, hLeftMax) : 0);
+        backTxt = hDown != null && (left == null || hDown >= left) ? `Humidité redescendue · retour en vitesse 1 dans ${hms(back)}` : left != null ? `Retour en vitesse 1 dans ${hms(back)}` : "Retour en vitesse 1 imminent";
+      }
+    }
+    const reason = unk ? "Relais indisponible" : !v2 ? "Vitesse normale" : left != null ? "Bouton de relance" : hOn ? `Humidité : ${esc(hum.attributes.pieces || "en hausse")}` : "Vitesse 2";
     const dark = this._isDark();
     const rooms = c.rooms.map((r) => {
       const v = num(S(r.humidity)), m = num(S(r.mean));
@@ -114,6 +132,7 @@ class VmcCard extends HTMLElement {
       .ttl b { font-size:1.1em; font-weight:650; } .ttl .sp { display:inline-block; margin-left:.4em; font-size:.78em; font-weight:700; padding:.15em .6em; border-radius:1em; background:${v2 ? "var(--ac)" : "var(--fi)"}; color:${v2 ? "#fff" : "var(--tx)"}; border:1px solid ${v2 ? "var(--ac)" : "var(--fib)"}; vertical-align:middle; }
       .ttl small { display:block; color:var(--mu); font-size:.85em; margin-top:.25em; }
       .ttl .pw { font-size:.8em; color:var(--mu); margin-top:.15em; }
+      .tm { display:flex; flex-wrap:wrap; gap:6px; } .tm span { display:inline-flex; align-items:center; gap:.4em; font-size:.8em; padding:.35em .8em; border-radius:2em; background:var(--gl); border:1px solid var(--glb); font-variant-numeric:tabular-nums; } .tm span.bk { border-color:color-mix(in srgb,var(--ac) 55%,transparent); } .tm ha-icon { --mdc-icon-size:1.15em; color:var(--ac); }
       .act { display:flex; gap:8px; flex-wrap:wrap; }
       .btn { font:inherit; font-size:.9em; font-weight:650; display:inline-flex; align-items:center; gap:.45em; padding:.6em 1.1em; min-height:44px; border-radius:2em; border:1px solid var(--fib); background:var(--fi); color:var(--tx); cursor:pointer; }
       .btn.main { background:var(--ac); border-color:var(--ac); color:#fff; } .btn ha-icon { --mdc-icon-size:1.2em; }
@@ -137,6 +156,7 @@ class VmcCard extends HTMLElement {
     <ha-card class="${dark ? "dark" : "light"}" style="${gvStyle(c, dark)}">
       <div class="top">${c.image ? `<div class="pic"><img src="${esc(c.image)}" alt=""><div class="fan mini" aria-hidden="true"><svg viewBox="0 0 64 64"><g fill="currentColor">${[0, 90, 180, 270].map((a) => `<path transform="rotate(${a} 32 32)" d="M32 30c-2-9 1-20 9-22 6-1 9 5 6 10-3 6-9 9-15 12z"/>`).join("")}<circle cx="32" cy="32" r="5"/></g></svg></div></div>` : `<div class="fan" aria-hidden="true"><svg viewBox="0 0 64 64"><g fill="currentColor">${[0, 90, 180, 270].map((a) => `<path transform="rotate(${a} 32 32)" d="M32 30c-2-9 1-20 9-22 6-1 9 5 6 10-3 6-9 9-15 12z"/>`).join("")}<circle cx="32" cy="32" r="5"/></g></svg></div>`}
         <div class="ttl"><b>${esc(c.name)}</b><span class="sp">${unk ? "?" : v2 ? "Vitesse 2" : "Vitesse 1"}</span><small>${reason}</small>${pw != null ? `<div class="pw">Consommation du circuit : ${pw.toFixed(0)} W</div>` : ""}</div></div>
+      ${v2 ? `<div class="tm"><span><ha-icon icon="mdi:timer-outline"></ha-icon>Vitesse 2 depuis ${lng(since)}</span><span class="bk"><ha-icon icon="mdi:fan-speed-1"></ha-icon>${backTxt}</span></div>` : ""}
       <div class="act">${left != null ? `<button class="btn" data-a="stop"><ha-icon icon="mdi:fan-speed-1"></ha-icon>Revenir en vitesse 1</button><button class="btn main" data-a="boost"><ha-icon icon="mdi:timer-refresh-outline"></ha-icon>Relancer 30 min</button>`
         : `<button class="btn main" data-a="boost" ${timer ? "" : "disabled"}><ha-icon icon="mdi:fan-speed-2"></ha-icon>Vitesse 2 · 30 min</button>`}</div>
       ${rooms ? `<div class="rooms">${rooms}<div class="leg"><span><i style="background:var(--mu)"></i>moyenne 24 h</span><span><i style="background:#e0524f"></i>seuil de vitesse 2</span></div></div>` : ""}
@@ -155,7 +175,7 @@ class VmcCard extends HTMLElement {
   }
 }
 
-const LABELS = { ...GV_LABELS, name: "Titre", relay_entity: "Relais de la vitesse 2 (allumé = vitesse 2)", timer_entity: "Minuteur du bouton (timer)", humidity_entity: "Capteur « humidité élevée » (facultatif)", power_entity: "Puissance du circuit (facultatif)", gap_entity: "Écart d'humidité (input_number)", max_entity: "Seuil absolu (input_number)", rooms: "Pièces surveillées", show_settings: "Afficher les réglages", image: "Photo de la VMC (URL, facultatif)", theme: "Thème" };
+const LABELS = { ...GV_LABELS, name: "Titre", relay_entity: "Relais de la vitesse 2 (allumé = vitesse 2)", timer_entity: "Minuteur du bouton (timer)", humidity_entity: "Capteur « humidité élevée » (facultatif)", trigger_entity: "Humidité au-dessus du seuil, sans temporisation (compte à rebours)", delay_off: "Maintien après la baisse d'humidité (min)", max_hours: "Durée maximale sur humidité (h)", power_entity: "Puissance du circuit (facultatif)", gap_entity: "Écart d'humidité (input_number)", max_entity: "Seuil absolu (input_number)", rooms: "Pièces surveillées", show_settings: "Afficher les réglages", image: "Photo de la VMC (URL, facultatif)", theme: "Thème" };
 class VmcCardEditor extends HTMLElement {
   setConfig(c) { this._config = { ...DEFAULTS, ...c }; if (!this._form) this._build(); else this._form.data = this._config; }
   set hass(h) { this._hass = h; if (this._form) this._form.hass = h; }
@@ -169,6 +189,10 @@ class VmcCardEditor extends HTMLElement {
       { type: "grid", name: "", schema: [
         { name: "humidity_entity", selector: { entity: { domain: "binary_sensor" } } },
         { name: "power_entity", selector: { entity: { domain: "sensor" } } }] },
+      { type: "grid", name: "", schema: [
+        { name: "trigger_entity", selector: { entity: { domain: "binary_sensor" } } },
+        { name: "delay_off", selector: { number: { min: 0, max: 60, mode: "box" } } },
+        { name: "max_hours", selector: { number: { min: 1, max: 12, mode: "box" } } }] },
       { type: "grid", name: "", schema: [
         { name: "gap_entity", selector: { entity: { domain: ["input_number", "number"] } } },
         { name: "max_entity", selector: { entity: { domain: ["input_number", "number"] } } }] },

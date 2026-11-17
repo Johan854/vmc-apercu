@@ -29,6 +29,9 @@ image: /local/image/vmc-aldes.png
 | `relay_entity` | `switch.dingtian_relay57239_switch7` | Relais de la vitesse 2 (allumé = vitesse 2) |
 | `timer_entity` | `timer.vmc_grande_vitesse` | Minuteur lancé par le bouton (30 min) |
 | `humidity_entity` | `binary_sensor.vmc_humidite_elevee` | Capteur « humidité élevée » (attribut `pieces`) |
+| `trigger_entity` | `binary_sensor.vmc_humidite_au_dessus_du_seuil` | Même condition sans temporisation : sert au compte à rebours après la baisse d'humidité |
+| `delay_off` | `10` | Minutes de maintien en vitesse 2 après la baisse (= `delay_off` du capteur « humidité élevée ») |
+| `max_hours` | `3` | Durée maximale de la vitesse 2 sur humidité |
 | `power_entity` | `sensor.esp_tableau_divers_puissance` | Puissance du circuit (facultatif) |
 | `gap_entity` | `input_number.vmc_ecart_humidite` | Écart au-dessus de la moyenne 24 h qui déclenche la vitesse 2 |
 | `max_entity` | `input_number.vmc_seuil_humidite_max` | Seuil absolu |
